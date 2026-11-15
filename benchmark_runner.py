@@ -72,14 +72,13 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2 (নতুন প্যাকেজ API ফিক্স)
+    # ২. Ninada v5.1.2 (HuggingFace ডিরেক্ট ONNX ফলব্যাক সহ)
     "02_Ninada_Male": '''
 import sys
 from pathlib import Path
-from huggingface_hub import hf_hub_download
+import soundfile as sf
 import onnxruntime as ort
 import numpy as np
-import soundfile as sf
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
@@ -90,7 +89,7 @@ try:
     wav_bytes = tts.speak(text, lang="bn", voice="male")
     Path(out_wav).write_bytes(wav_bytes)
 except Exception:
-    # ডিরেক্ট অনাক্স ব্যাকআপ
+    from huggingface_hub import hf_hub_download
     onnx_file = hf_hub_download("gnumanth/ninada", "onnx/bn.onnx")
     sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
     tokens = [ord(c) for c in text]
@@ -98,7 +97,7 @@ except Exception:
     sf.write(out_wav, np.asarray(out[0], dtype=np.float32).reshape(-1), 24000)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) — tokens_sherpa.txt ফিক্স
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) — tokens_sherpa.txt
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -115,7 +114,6 @@ onnx_file = repo / "model_fullmeta.onnx"
 if not onnx_file.exists():
     onnx_file = next(repo.rglob("*.onnx"))
 
-# শেরপা-অনাক্সের জন্য অফিশিয়াল tokens_sherpa.txt ব্যবহার করা আবশ্যক
 tokens_file = repo / "tokens_sherpa.txt"
 if not tokens_file.exists():
     tokens_file = next(repo.rglob("tokens.txt"))
@@ -153,7 +151,7 @@ merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
 sf.write(out_wav, merged, sr, subtype="PCM_16")
 ''',
 
-    # ৪. Piper Bangladeshi Male
+    # ৪. Piper Bangladeshi Male (speaker 0)
     "04_Piper_Bangladeshi_Male": '''
 import sys, wave
 from pathlib import Path
@@ -167,7 +165,7 @@ with wave.open(sys.argv[2], "wb") as wf:
     voice.synthesize_wav(sys.argv[1], wf, speaker_id=0)
 ''',
 
-    # ৫. Piper Indian Bengali Male (Google মাল্টি-স্পিকার স্পিকার ১)
+    # ৫. Piper West Bengal Male (speaker 1)
     "05_Piper_WestBengal_Male": '''
 import sys, wave
 from pathlib import Path
@@ -268,7 +266,7 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (Kokoro-র বাংলা ভার্সন)
+    # ১০. IndicVoice-82M Male (Kokoro আর্কিটেকচার)
     "10_IndicVoice_82M_Male": '''
 import sys
 import soundfile as sf
@@ -284,10 +282,10 @@ for gs, ps, audio in pipeline(text, voice="am_adam"):
 if audio_chunks:
     sf.write(out_wav, audio_chunks[0], 24000)
 else:
-    raise RuntimeError("IndicVoice থেকে কোনো অডিও আসেনি")
+    raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (ResembleAI / Dhaka Bangla)
+    # ১১. Chatterbox Bengali Male (ResembleAI)
     "11_Chatterbox_Bengali_Male": '''
 import sys
 import soundfile as sf
@@ -301,18 +299,23 @@ wav = model.generate(text)
 sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
 ''',
 
-    # ১২. OmniVoice Male (600+ Languages Voice Design)
+    # ১২. OmniVoice Male
     "12_OmniVoice_Male": '''
-import sys
-import soundfile as sf
-from omnivoice import OmniVoice
+import sys, subprocess, shutil
+from pathlib import Path
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-ov = OmniVoice(device="cpu")
-wav = ov.generate(text, language="Bengali", instruct="male news anchor, confident tone")
-sf.write(out_wav, wav, 24000)
+# OmniVoice CPU inference
+try:
+    from omnivoice import OmniVoice
+    ov = OmniVoice(device="cpu")
+    wav = ov.generate(text, language="Bengali", instruct="male news anchor")
+    import soundfile as sf
+    sf.write(out_wav, wav, 24000)
+except Exception:
+    raise RuntimeError("OmniVoice CPU প্যাকেজ প্রস্তুত নয়")
 ''',
 
     # ১৩. RHVoice Bengali
@@ -322,7 +325,6 @@ rhvoice_bin = shutil.which("RHVoice-client") or shutil.which("rhvoice")
 if rhvoice_bin:
     subprocess.run([rhvoice_bin, "-s", "bengali", "-o", sys.argv[2]], input=sys.argv[1].encode("utf-8"), check=True)
 else:
-    # RHVoice অফিসিয়াল রিপোতে এখনো বাংলা রিলিজ হয়নি (Issue #1011), তাই eSpeak-NG মেল দিয়ে টেস্ট হ্যান্ডেল
     espeak_bin = shutil.which("espeak-ng") or shutil.which("espeak")
     subprocess.run([espeak_bin, "-v", "bn+m1", "-s", "145", "-w", sys.argv[2], sys.argv[1]], check=True)
 ''',
@@ -351,7 +353,6 @@ def main():
     print(f"📝 টেস্ট স্ক্রিপ্ট শব্দসংখ্যা: {len(BENCHMARK_TEXT.split())}")
     print("=====================================================\n")
 
-    # কনফিগ লোড করা
     config = {}
     if CONFIG_FILE.exists():
         try:
@@ -361,7 +362,6 @@ def main():
             pass
 
     for dir_name, code_str in WORKER_SCRIPTS.items():
-        # কনফিগে false থাকলে স্কিপ করবে
         if config and not config.get(dir_name, True):
             print(f"⏩ [SKIP] {dir_name} (কনফিগে false করা আছে)")
             continue
