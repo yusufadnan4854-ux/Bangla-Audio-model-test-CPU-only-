@@ -54,10 +54,6 @@ def apply_studio_mastering(raw_wav: Path, mastered_wav: Path):
         shutil.copy2(raw_wav, mastered_wav)
 
 
-# =========================================================================
-# প্রতিটি মডেলের সাব-ওয়ার্কার স্ক্রিপ্ট (শুধুমাত্র মেল ভয়েস)
-# =========================================================================
-
 WORKER_SCRIPTS = {
     # ১. Indic-Tiny-TTS
     "01_Indic_Tiny_TTS_Male": '''
@@ -72,32 +68,38 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2 (HuggingFace ডিরেক্ট ONNX ফলব্যাক সহ)
+    # ২. Ninada v5.1.2 (ইনপুট ফিক্সড)
     "02_Ninada_Male": '''
 import sys
 from pathlib import Path
 import soundfile as sf
 import onnxruntime as ort
 import numpy as np
+from huggingface_hub import hf_hub_download
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-try:
-    from ninada import Ninada
-    tts = Ninada(lang="bn", voice="male")
-    wav_bytes = tts.speak(text, lang="bn", voice="male")
-    Path(out_wav).write_bytes(wav_bytes)
-except Exception:
-    from huggingface_hub import hf_hub_download
-    onnx_file = hf_hub_download("gnumanth/ninada", "onnx/bn.onnx")
-    sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
-    tokens = [ord(c) for c in text]
-    out = sess.run(None, {"input": np.array([tokens], dtype=np.int64)})
-    sf.write(out_wav, np.asarray(out[0], dtype=np.float32).reshape(-1), 24000)
+onnx_file = hf_hub_download("gnumanth/ninada", "onnx/bn.onnx")
+sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
+tokens = [ord(c) for c in text]
+ids_arr = np.array([tokens], dtype=np.int64)
+
+inp_names = {i.name for i in sess.get_inputs()}
+feed = {}
+if "input_ids" in inp_names:
+    feed["input_ids"] = ids_arr
+elif "input" in inp_names:
+    feed["input"] = ids_arr
+
+if "scales" in inp_names:
+    feed["scales"] = np.array([0.667, 1.0, 0.8], dtype=np.float32)
+
+out = sess.run(None, feed)
+sf.write(out_wav, np.asarray(out[0], dtype=np.float32).reshape(-1), 24000)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) — tokens_sherpa.txt
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -151,35 +153,30 @@ merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
 sf.write(out_wav, merged, sr, subtype="PCM_16")
 ''',
 
-    # ৪. Piper Bangladeshi Male (speaker 0)
+    # ৪. Piper Bangladeshi Male
     "04_Piper_Bangladeshi_Male": '''
-import sys, wave
+import sys, subprocess
 from pathlib import Path
-from piper import PiperVoice
 from huggingface_hub import snapshot_download
 
 repo = Path(snapshot_download("rhasspy/piper-voices", allow_patterns=["bn/bn_BD/google/medium/*"]))
 onnx_p = repo / "bn/bn_BD/google/medium/bn_BD-google-medium.onnx"
-voice = PiperVoice.load(str(onnx_p))
-with wave.open(sys.argv[2], "wb") as wf:
-    voice.synthesize_wav(sys.argv[1], wf, speaker_id=0)
+subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2]], input=sys.argv[1], text=True, check=True)
 ''',
 
-    # ৫. Piper West Bengal Male (speaker 1)
+    # ৫. Piper West Bengal Male (CLI ফিক্সড)
     "05_Piper_WestBengal_Male": '''
-import sys, wave
+import sys, subprocess
 from pathlib import Path
-from piper import PiperVoice
 from huggingface_hub import snapshot_download
 
 repo = Path(snapshot_download("rhasspy/piper-voices", allow_patterns=["bn/bn_BD/google/medium/*"]))
 onnx_p = repo / "bn/bn_BD/google/medium/bn_BD-google-medium.onnx"
-voice = PiperVoice.load(str(onnx_p))
-with wave.open(sys.argv[2], "wb") as wf:
-    voice.synthesize_wav(sys.argv[1], wf, speaker_id=1)
+# Piper CLI দিয়ে স্পিকার ১ সরাসরি তৈরি
+subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2], "--speaker", "1"], input=sys.argv[1], text=True, check=True)
 ''',
 
-    # ৬. Meta MMS-TTS Bengali (attention_mask ফিক্স)
+    # ৬. Meta MMS-TTS Bengali (ইনপুট ফিল্টার ফিক্সড)
     "06_Meta_MMS_Bengali_Male": '''
 import sys, json, re
 from pathlib import Path
@@ -196,6 +193,7 @@ vocab = json.loads((repo / "vocab.json").read_text(encoding="utf-8"))
 cfg = json.loads((repo / "config.json").read_text(encoding="utf-8"))
 sess = ort.InferenceSession(str(repo / "model.onnx"), providers=["CPUExecutionProvider"])
 sr = int(cfg.get("sampling_rate", 16000))
+inp_names = {i.name for i in sess.get_inputs()}
 
 sentences = [s.strip() for s in re.split(r"(?<=[।\\.\\?\\!\\n])\\s*", text) if s.strip()] or [text]
 parts = []
@@ -206,11 +204,12 @@ for i, s in enumerate(sentences):
     if not chars: continue
     ids = [0] + [c for val in chars for c in (val, 0)]
     ids_arr = np.array([ids], dtype=np.int64)
-    feed = {
-        "input_ids": ids_arr,
-        "attention_mask": np.ones_like(ids_arr, dtype=np.int64),
-        "scales": np.array([0.667, 1.05, 0.8], dtype=np.float32)
-    }
+    feed = {"input_ids": ids_arr}
+    if "attention_mask" in inp_names:
+        feed["attention_mask"] = np.ones_like(ids_arr, dtype=np.int64)
+    if "scales" in inp_names:
+        feed["scales"] = np.array([0.667, 1.05, 0.8], dtype=np.float32)
+
     out = sess.run(None, feed)
     parts.append(np.asarray(out[0], dtype=np.float32).reshape(-1))
     if i < len(sentences) - 1:
@@ -220,7 +219,7 @@ merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
 sf.write(out_wav, merged, sr, subtype="PCM_16")
 ''',
 
-    # ৭. Microsoft Edge TTS Pradeep
+    # ৭. Microsoft Edge TTS
     "07_Edge_TTS_PradeepNeural_Male": '''
 import sys, asyncio, subprocess
 from pathlib import Path
@@ -249,7 +248,7 @@ else:
     raise RuntimeError("espeak binary not found")
 ''',
 
-    # ৯. Kokoro-82M Male (বিশ্বের #1 CPU মডেল)
+    # ৯. Kokoro-82M Male (সঠিক HF রিপোজিটরি ফিক্সড)
     "09_Kokoro_82M_Male": '''
 import sys
 from huggingface_hub import hf_hub_download
@@ -259,8 +258,8 @@ import soundfile as sf
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-onnx_p = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v0_19.onnx")
-voices_p = hf_hub_download("hexgrad/Kokoro-82M", "voices.json")
+onnx_p = hf_hub_download("ExNihilus/kokoro-onnx", "kokoro-v1.0.onnx")
+voices_p = hf_hub_download("ExNihilus/kokoro-onnx", "voices-v1.0.bin")
 kokoro = Kokoro(onnx_p, voices_p)
 samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
@@ -299,23 +298,19 @@ wav = model.generate(text)
 sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
 ''',
 
-    # ১২. OmniVoice Male
+    # ১২. OmniVoice Male (Diffusion LM)
     "12_OmniVoice_Male": '''
-import sys, subprocess, shutil
+import sys, torch
 from pathlib import Path
+import soundfile as sf
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-# OmniVoice CPU inference
-try:
-    from omnivoice import OmniVoice
-    ov = OmniVoice(device="cpu")
-    wav = ov.generate(text, language="Bengali", instruct="male news anchor")
-    import soundfile as sf
-    sf.write(out_wav, wav, 24000)
-except Exception:
-    raise RuntimeError("OmniVoice CPU প্যাকেজ প্রস্তুত নয়")
+from omnivoice import OmniVoice
+ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
+wav = ov.generate(text, language="Bengali", instruct="confident male news anchor")
+sf.write(out_wav, wav[0], 24000)
 ''',
 
     # ১৩. RHVoice Bengali
