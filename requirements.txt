@@ -7,11 +7,9 @@ piper-tts
 sherpa-onnx
 edge-tts>=7.3.1
 requests
-ninada
 kokoro-onnx
 torch
 torchaudio
-git+https://github.com/Bindkushal/indic-g2p.git
-git+https://github.com/Bindkushal/indic-voice.git
-chatterbox-tts
-omnivoice
+wheel
+setuptools
+cython
