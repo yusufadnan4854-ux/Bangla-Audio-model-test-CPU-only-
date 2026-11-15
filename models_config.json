@@ -1,7 +1,7 @@
 {
   "01_Indic_Tiny_TTS_Male": false,
   "02_Ninada_Male": true,
-  "03_BanglaTTS_Sherpa_BD_Male": true,
+  "03_BanglaTTS_Sherpa_BD_Male": false,
   "04_Piper_Bangladeshi_Male": false,
   "05_Piper_WestBengal_Male": true,
   "06_Meta_MMS_Bengali_Male": true,
@@ -11,5 +11,5 @@
   "10_IndicVoice_82M_Male": true,
   "11_Chatterbox_Bengali_Male": true,
   "12_OmniVoice_Male": true,
-  "13_RHVoice_Bengali_Male": true
+  "13_RHVoice_Bengali_Male": false
 }
