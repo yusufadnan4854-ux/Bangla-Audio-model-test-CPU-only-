@@ -29,12 +29,14 @@ jobs:
           pip install wheel setuptools cython "numpy<2.0.0"
           pip install -r requirements.txt
 
-      - name: Pre-install Fragile Packages (pkuseg, Chatterbox & IndicVoice)
+      - name: Install Advanced Model Dependencies (IndicVoice, Chatterbox & OmniVoice)
         run: |
+          pip install spacy perth || true
           pip install --no-build-isolation "pkuseg>=0.0.25" || true
           pip install --no-deps chatterbox-tts || true
           pip install git+https://github.com/Bindkushal/indic-g2p.git || true
           pip install git+https://github.com/Bindkushal/indic-voice.git || true
+          pip install git+https://github.com/k2-fsa/OmniVoice.git --no-deps || true
 
       - name: Configure Rclone
         shell: python
