@@ -256,7 +256,7 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (অন-দ্য-ফ্লাই Git LFS অটো-রিপ্লেস ফিক্সড)
+    # ১০. IndicVoice-82M Male (অটো Git-LFS বাইনারি রিজলভার ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys, os, requests
 from pathlib import Path
@@ -264,7 +264,6 @@ import numpy as np
 import soundfile as sf
 import torch
 
-# torch.load হুক: যদি কোনো ফাইল Git LFS পয়েন্টার হয়, অন-দ্য-ফ্লাই আসল ফাইল নামিয়ে রিপ্লেস করবে
 _orig_load = torch.load
 def _custom_load(f, *args, **kwargs):
     kwargs["weights_only"] = False
@@ -274,26 +273,21 @@ def _custom_load(f, *args, **kwargs):
     elif hasattr(f, "name") and isinstance(f.name, (str, Path)):
         p = Path(f.name)
 
-    if p and p.exists() and p.is_file() and p.stat().st_size < 2000:
-        raw_head = p.read_bytes()[:50]
-        if b"version https://git-lfs" in raw_head:
-            urls = [
-                f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/{p.name}",
-                f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/{p.name}",
-                f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/{p.name}",
-                f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/{p.name}",
-            ]
-            for u in urls:
-                try:
-                    r = requests.get(u, allow_redirects=True, timeout=90)
-                    if r.status_code == 200 and len(r.content) > 2000:
-                        p.write_bytes(r.content)
-                        if hasattr(f, "seek"):
-                            f.close()
-                            f = str(p)
-                        break
-                except Exception:
-                    pass
+    if p and p.exists() and p.is_file():
+        try:
+            head = p.read_bytes()[:30]
+            if head.startswith(b"version https://"):
+                if hasattr(f, "close"):
+                    try: f.close()
+                    except Exception: pass
+                # LFS পয়েন্টারের বদলে মূল Kokoro রিপো থেকে অফিশিয়াল টেন্সর নামিয়ে ডিস্কে রিপ্লেস করা
+                url = f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/{p.name}"
+                r = requests.get(url, allow_redirects=True, timeout=90)
+                if r.status_code == 200 and len(r.content) > 5000:
+                    p.write_bytes(r.content)
+                    f = str(p)
+        except Exception:
+            pass
     return _orig_load(f, *args, **kwargs)
 
 torch.load = _custom_load
@@ -309,7 +303,8 @@ out_wav = sys.argv[2]
 
 pipeline = IndicPipeline(lang_code="bn", repo_id="Bindkushal/IndicVoice-82M")
 audio_chunks = []
-for gs, ps, audio in pipeline(text, voice="am_adam"):
+# অফিশিয়াল স্টেবল মেল ভয়েস am_michael ব্যবহার করা হয়েছে
+for gs, ps, audio in pipeline(text, voice="am_michael"):
     audio_chunks.append(audio)
 
 if audio_chunks:
@@ -319,9 +314,9 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (সিনট্যাক্স এরর মুক্ত ও সেনটেন্স চাংকিং ফিক্সড)
+    # ১১. Chatterbox Bengali Male (Pretrained Models ও Checkpoint পাথ সিমলিংক ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
-import sys, re, inspect
+import sys, os, re, shutil, inspect
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -338,6 +333,22 @@ text = sys.argv[1]
 out_wav = sys.argv[2]
 
 repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
+
+# ফোল্ডার পাথের অমিল দূর করতে সিমলিংক বা কপি তৈরি করা
+inf_dir = repo / "inference"
+for d in ["pretrained_models", "checkpoint", "voices", "src"]:
+    target = repo / d
+    link = inf_dir / d
+    if target.exists() and not link.exists():
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except Exception:
+            try:
+                shutil.copytree(target, link)
+            except Exception:
+                pass
+
+os.chdir(str(repo))
 sys.path.insert(0, str(repo / "src"))
 sys.path.insert(0, str(repo / "inference"))
 sys.path.insert(0, str(repo))
@@ -386,20 +397,18 @@ else:
     raise RuntimeError("BanglaTTS class not found in inference/infer.py")
 ''',
 
-    # ১২. OmniVoice Male (CPU অপটিমাইজড num_step=8 ও থ্রেডিং ফিক্সড)
+    # ১২. OmniVoice Male
     "12_OmniVoice_Male": '''
 import sys, torch
 import soundfile as sf
 from omnivoice import OmniVoice
 
-# সিপিইউ থ্রেড অপটিমাইজেশন
 torch.set_num_threads(2)
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
 ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
-# num_step=8 দিলে কোয়ালিটি ঠিক রেখে ৪ গুণ দ্রুত জেনারেট হয় এবং টাইমআউট হয় না
 wav = ov.generate(text, language="Bengali", instruct="male, low pitch", num_step=8)
 sf.write(out_wav, wav[0], 24000)
 ''',
@@ -423,7 +432,6 @@ def run_model_in_subprocess(model_name: str, code_str: str, folder: Path) -> boo
     raw_wav = folder / "raw.wav"
 
     cmd = [sys.executable, str(worker_file), BENCHMARK_TEXT, str(raw_wav)]
-    # টাইমআউট বাড়িয়ে ৬০০ সেকেন্ড (১০ মিনিট) করা হলো
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
 
     if res.returncode == 0 and raw_wav.exists() and raw_wav.stat().st_size > 1000:
