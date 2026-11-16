@@ -36,7 +36,12 @@ jobs:
           pip install --no-build-isolation "pkuseg>=0.0.25" || true
           pip install --no-deps chatterbox-tts || true
           pip install git+https://github.com/Bindkushal/indic-g2p.git || true
-          pip install git+https://github.com/Bindkushal/indic-voice.git || true
+          
+          # Git LFS সহ আসল বাইনারি ওয়েট নিশ্চিত করে indic-voice ইন্সটল
+          rm -rf /tmp/indic-voice
+          git clone https://github.com/Bindkushal/indic-voice.git /tmp/indic-voice
+          cd /tmp/indic-voice && git lfs pull && pip install --no-deps . && cd -
+          
           pip install git+https://github.com/k2-fsa/OmniVoice.git --no-deps || true
 
       - name: Configure Rclone
