@@ -13,3 +13,6 @@ torchaudio
 wheel
 setuptools
 cython
+pydub
+s3tokenizer
+ninada
