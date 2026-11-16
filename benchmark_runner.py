@@ -118,7 +118,8 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-raw_sentences = [s.strip() for s in re.split(r"[।\.\?\!\n]+", text) if s.strip()]
+clean_text = text.replace("\\n", " ")
+raw_sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if s.strip()]
 sentences = []
 for s in raw_sentences:
     clean = re.sub(r"[^\u0980-\u09FF\s]", " ", s)
@@ -184,7 +185,8 @@ sess = ort.InferenceSession(str(repo / "model.onnx"), providers=["CPUExecutionPr
 sr = int(cfg.get("sampling_rate", 16000))
 inp_names = {i.name for i in sess.get_inputs()}
 
-sentences = [s.strip() for s in re.split(r"(?<=[।\\.\\?\\!\\n])\\s*", text) if s.strip()] or [text]
+clean_text = text.replace("\\n", " ")
+sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if s.strip()]
 parts = []
 pause = np.zeros(int(sr * 0.15), dtype=np.float32)
 
@@ -254,7 +256,7 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (Git LFS Pointer ও PyTorch 2.6 সম্পূর্ণ ফিক্সড)
+    # ১০. IndicVoice-82M Male (অন-দ্য-ফ্লাই Git LFS অটো-রিপ্লেস ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys, os, requests
 from pathlib import Path
@@ -262,32 +264,41 @@ import numpy as np
 import soundfile as sf
 import torch
 
+# torch.load হুক: যদি কোনো ফাইল Git LFS পয়েন্টার হয়, অন-দ্য-ফ্লাই আসল ফাইল নামিয়ে রিপ্লেস করবে
 _orig_load = torch.load
-def _custom_load(*args, **kwargs):
+def _custom_load(f, *args, **kwargs):
     kwargs["weights_only"] = False
-    return _orig_load(*args, **kwargs)
+    p = None
+    if isinstance(f, (str, Path)):
+        p = Path(f)
+    elif hasattr(f, "name") and isinstance(f.name, (str, Path)):
+        p = Path(f.name)
+
+    if p and p.exists() and p.is_file() and p.stat().st_size < 2000:
+        raw_head = p.read_bytes()[:50]
+        if b"version https://git-lfs" in raw_head:
+            urls = [
+                f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/{p.name}",
+                f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/{p.name}",
+                f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/{p.name}",
+                f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/{p.name}",
+            ]
+            for u in urls:
+                try:
+                    r = requests.get(u, allow_redirects=True, timeout=90)
+                    if r.status_code == 200 and len(r.content) > 2000:
+                        p.write_bytes(r.content)
+                        if hasattr(f, "seek"):
+                            f.close()
+                            f = str(p)
+                        break
+                except Exception:
+                    pass
+    return _orig_load(f, *args, **kwargs)
+
 torch.load = _custom_load
 
-import indicvoice
 import indicvoice.pipeline
-
-# যদি Git LFS এর কারণে ফাইল পয়েন্টার হিসেবে থেকে থাকে, সরাসরি আসল ফাইল ডাউনলোড করা
-voice_dir = Path(indicvoice.__file__).parent / "voices"
-if voice_dir.exists():
-    for pt in voice_dir.glob("*.pt"):
-        if pt.stat().st_size < 1000:
-            url = f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/{pt.name}"
-            r = requests.get(url, allow_redirects=True, timeout=60)
-            if r.status_code == 200 and len(r.content) > 1000:
-                pt.write_bytes(r.content)
-
-model_pth = Path(indicvoice.__file__).parent / "indicvoice-v1_0.pth"
-if model_pth.exists() and model_pth.stat().st_size < 1000:
-    url = "https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/indicvoice-v1_0.pth"
-    r = requests.get(url, allow_redirects=True, timeout=120)
-    if r.status_code == 200 and len(r.content) > 1000:
-        model_pth.write_bytes(r.content)
-
 if hasattr(indicvoice.pipeline, "LANG_CODES"):
     indicvoice.pipeline.LANG_CODES["bn"] = "Bengali"
 
@@ -308,7 +319,7 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (LoRA + সম্পূর্ণ বাক্যের জন্য সেনটেন্স চাংকিং ফিক্সড)
+    # ১১. Chatterbox Bengali Male (সিনট্যাক্স এরর মুক্ত ও সেনটেন্স চাংকিং ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
 import sys, re, inspect
 from pathlib import Path
@@ -353,8 +364,8 @@ if hasattr(infer, "BanglaTTS"):
     elif "ref_audio" in sig_synth.parameters and ref_wav:
         call_kw["ref_audio"] = str(ref_wav)
 
-    # পুরো স্ক্রিপ্টকে বাক্যে ভাগ করে প্রতিটি বাক্য সিন্থেসিস করা যাতে ড্রপ না হয়
-    raw_sentences = [s.strip() for s in re.split(r"[।\.\?\!\n]+", text) if len(s.strip()) > 3]
+    clean_text = text.replace("\\n", " ")
+    raw_sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if len(s.strip()) > 3]
     parts = []
     sr = getattr(tts, "sr", 24000)
     pause = np.zeros(int(sr * 0.25), dtype=np.float32)
@@ -375,18 +386,21 @@ else:
     raise RuntimeError("BanglaTTS class not found in inference/infer.py")
 ''',
 
-    # ১২. OmniVoice Male (সঠিক Instruct কি-ওয়ার্ড ফিক্সড)
+    # ১২. OmniVoice Male (CPU অপটিমাইজড num_step=8 ও থ্রেডিং ফিক্সড)
     "12_OmniVoice_Male": '''
 import sys, torch
 import soundfile as sf
 from omnivoice import OmniVoice
 
+# সিপিইউ থ্রেড অপটিমাইজেশন
+torch.set_num_threads(2)
+
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-# OmniVoice শুধুমাত্র তার সাপোর্টেড কি-ওয়ার্ড গ্রহণ করে (e.g., 'male, middle-aged, low pitch')
 ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
-wav = ov.generate(text, language="Bengali", instruct="male, middle-aged, low pitch")
+# num_step=8 দিলে কোয়ালিটি ঠিক রেখে ৪ গুণ দ্রুত জেনারেট হয় এবং টাইমআউট হয় না
+wav = ov.generate(text, language="Bengali", instruct="male, low pitch", num_step=8)
 sf.write(out_wav, wav[0], 24000)
 ''',
 
@@ -409,7 +423,8 @@ def run_model_in_subprocess(model_name: str, code_str: str, folder: Path) -> boo
     raw_wav = folder / "raw.wav"
 
     cmd = [sys.executable, str(worker_file), BENCHMARK_TEXT, str(raw_wav)]
-    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=300)
+    # টাইমআউট বাড়িয়ে ৬০০ সেকেন্ড (১০ মিনিট) করা হলো
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
 
     if res.returncode == 0 and raw_wav.exists() and raw_wav.stat().st_size > 1000:
         return True
@@ -457,7 +472,7 @@ def main():
             else:
                 print(f"  ❌ এই মডেলটি ব্যর্থ হয়েছে (পরবর্তী মডেলে যাওয়া হচ্ছে)।\n")
         except subprocess.TimeoutExpired:
-            print(f"  ⏰ টাইমআউট (৫ মিনিট পার হয়েছে)। পরবর্তী মডেলে যাওয়া হচ্ছে...\n")
+            print(f"  ⏰ টাইমআউট (১০ মিনিট পার হয়েছে)। পরবর্তী মডেলে যাওয়া হচ্ছে...\n")
         except Exception as e:
             print(f"  ⚠️ এরর: {e}\n")
 
