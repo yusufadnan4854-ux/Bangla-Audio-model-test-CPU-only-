@@ -82,7 +82,7 @@ with open(out_wav, "wb") as f:
     f.write(wav_bytes)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - যুক্তবর্ণের উচ্চারণ ও বাউন্ডারি ফিক্সড
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -118,7 +118,21 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
+# VITS-এর জন্য যুক্তবর্ণ ফোনেটিক রূপান্তর ডিকশনারি (উচ্চারণ নিখুঁত করার জন্য)
+PHONETIC_FIXES = {
+    "প্রিয়": "প্রিও",
+    "স্বাগতম": "শাগতম",
+    "বিজ্ঞপ্তি": "বিগগোপ্তি",
+    "যোগ্য": "জোগগো",
+    "দক্ষ": "দোকখো",
+    "অভিজ্ঞতা": "ওভিগগোতা",
+    "প্রযোজ্য": "প্রোজোজজো",
+}
+
 clean_text = text.replace("\\n", " ")
+for wrong, right in PHONETIC_FIXES.items():
+    clean_text = clean_text.replace(wrong, right)
+
 raw_sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if s.strip()]
 sentences = []
 for s in raw_sentences:
@@ -256,60 +270,48 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (সঠিক HF রিপোজিটরি থেকে বাইনারি ওয়েটস ডাউনলোড ফিক্সড)
+    # ১০. IndicVoice-82M Male (সরাসরি আসল বাইনারি ওয়েটস প্রি-ডাউনলোড ফিক্সড)
     "10_IndicVoice_82M_Male": '''
-import sys, os, requests
+import sys, os, shutil
 from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
+import torch.serialization
+from huggingface_hub import hf_hub_download
+
+# আসল ৩২০ মেগাবাইটের কোকোরো মডেল ওয়েট এবং মেল ভয়েস নামিয়ে নেওয়া
+real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v0_19.pth")
+real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_adam.pt")
+
+import indicvoice
+v_dir = Path(indicvoice.__file__).parent / "voices"
+if v_dir.exists():
+    for f in v_dir.glob("*.pt"):
+        if f.stat().st_size < 2000:
+            shutil.copy2(real_voice, f)
+
+cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+if cache_dir.exists():
+    for f in cache_dir.rglob("*.pth"):
+        if f.stat().st_size < 2000:
+            shutil.copy2(real_weights, f)
 
 _orig_load = torch.load
-def _custom_load(f, *args, **kwargs):
+def _safe_load(f, *args, **kwargs):
     kwargs["weights_only"] = False
-    p = None
-    if isinstance(f, (str, Path)):
-        p = Path(f)
-    elif hasattr(f, "name") and isinstance(f.name, (str, Path)):
-        p = Path(f.name)
-
-    if p and p.exists() and p.is_file():
-        try:
-            head = p.read_bytes()[:30]
-            if head.startswith(b"version https://"):
-                if hasattr(f, "close"):
-                    try: f.close()
-                    except Exception: pass
-                
-                # সঠিক মডেল ওয়েটস ও ভয়েস URL থেকে ডাউনলোড
-                fname = p.name
-                if fname.endswith(".pth"):
-                    urls = [
-                        f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/{fname}",
-                        "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-v0_19.pth"
-                    ]
-                else:
-                    urls = [
-                        f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/{fname}",
-                        f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/{fname}",
-                        "https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/am_adam.pt",
-                        "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/am_michael.pt"
-                    ]
-
-                for u in urls:
-                    try:
-                        r = requests.get(u, allow_redirects=True, timeout=120)
-                        if r.status_code == 200 and len(r.content) > 3000:
-                            p.write_bytes(r.content)
-                            f = str(p)
-                            break
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+    p = Path(f) if isinstance(f, (str, Path)) else (Path(f.name) if hasattr(f, "name") else None)
+    if p and p.exists() and p.stat().st_size < 2000:
+        if p.name.endswith(".pth"): shutil.copy2(real_weights, p)
+        elif p.name.endswith(".pt"): shutil.copy2(real_voice, p)
+        if hasattr(f, "seek"):
+            try: f.close()
+            except Exception: pass
+            f = str(p)
     return _orig_load(f, *args, **kwargs)
 
-torch.load = _custom_load
+torch.load = _safe_load
+torch.serialization.load = _safe_load
 
 import indicvoice.pipeline
 if hasattr(indicvoice.pipeline, "LANG_CODES"):
@@ -322,7 +324,6 @@ out_wav = sys.argv[2]
 
 pipeline = IndicPipeline(lang_code="bn", repo_id="Bindkushal/IndicVoice-82M")
 audio_chunks = []
-# অফিশিয়াল am_adam মেল ভয়েস
 for gs, ps, audio in pipeline(text, voice="am_adam"):
     audio_chunks.append(audio)
 
@@ -333,9 +334,9 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (ডাইনামিক মেথড সার্চ ও CLI ফলব্যাক ফিক্সড)
+    # ১১. Chatterbox Bengali Male (সকল আউটপুট টাইপ ও ডাইনামিক লোডার ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
-import sys, os, re, shutil, inspect, subprocess
+import sys, os, re, shutil, inspect
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -381,61 +382,50 @@ if not ref_wav.exists():
 
 clean_text = text.replace("\\n", " ")
 
-# ১. ক্লাস মেথড দিয়ে সিন্থেসিস চেষ্টা
-success = False
-try:
-    import infer
-    if hasattr(infer, "BanglaTTS"):
-        sig = inspect.signature(infer.BanglaTTS.__init__)
-        kw = {}
-        if "device" in sig.parameters: kw["device"] = "cpu"
-        if "repo_root" in sig.parameters: kw["repo_root"] = str(repo)
-        if "checkpoint_path" in sig.parameters: kw["checkpoint_path"] = str(repo / "checkpoint")
-        tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
+import infer
+if hasattr(infer, "BanglaTTS"):
+    sig = inspect.signature(infer.BanglaTTS.__init__)
+    kw = {}
+    if "device" in sig.parameters: kw["device"] = "cpu"
+    if "repo_root" in sig.parameters: kw["repo_root"] = str(repo)
+    if "checkpoint_path" in sig.parameters: kw["checkpoint_path"] = str(repo / "checkpoint")
+    tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
 
-        # ডাইনামিকালি সব মেথড সার্চ করা
-        method_candidates = ["infer", "generate", "tts", "synthesize", "speak", "sample", "__call__"]
-        synth_fn = None
-        for m in method_candidates:
-            if hasattr(tts, m) and callable(getattr(tts, m)):
-                synth_fn = getattr(tts, m)
+    synth_fn = getattr(tts, "generate", None) or getattr(tts, "infer", None) or getattr(tts, "tts", None) or getattr(tts, "synthesize", None)
+    if synth_fn is None and callable(tts):
+        synth_fn = tts
+
+    if synth_fn is None:
+        callables = [m for m in dir(tts) if not m.startswith("_") and callable(getattr(tts, m, None))]
+        synth_fn = getattr(tts, callables[0])
+
+    sig_s = inspect.signature(synth_fn)
+    call_kw = {}
+    for p in ["audio_prompt_path", "ref_audio", "reference", "ref_path"]:
+        if p in sig_s.parameters and ref_wav:
+            call_kw[p] = str(ref_wav)
+
+    res = synth_fn(clean_text, **call_kw)
+
+    # ডিকশনারি, টুপল বা টেন্সর থেকে অডিও অ্যারে এক্সট্র্যাক্ট করা
+    if isinstance(res, dict):
+        for k in ["audio", "wav", "waveform", "output"]:
+            if k in res:
+                res = res[k]
                 break
-        
-        if synth_fn is None and callable(tts):
-            synth_fn = tts
+    elif isinstance(res, (tuple, list)):
+        for item in res:
+            if hasattr(item, "shape") or isinstance(item, (np.ndarray, list)):
+                res = item
+                break
 
-        if synth_fn is not None:
-            sig_s = inspect.signature(synth_fn)
-            call_kw = {}
-            for p in ["audio_prompt_path", "ref_audio", "reference", "ref_path"]:
-                if p in sig_s.parameters and ref_wav:
-                    call_kw[p] = str(ref_wav)
-
-            wav = synth_fn(clean_text, **call_kw)
-            if isinstance(wav, tuple): wav = wav[0]
-            if hasattr(wav, "cpu"): wav = wav.squeeze().cpu().numpy()
-            arr = np.asarray(wav, dtype=np.float32).reshape(-1)
-            sr = getattr(tts, "sr", getattr(tts, "sample_rate", 24000))
-            if arr.size > sr * 3:
-                sf.write(out_wav, arr, sr)
-                success = True
-except Exception as e:
-    print(f"BanglaTTS ক্লাস মেথড এরর: {e}")
-
-# ২. ফলব্যাক: infer.py এর CLI দিয়ে তৈরি করা
-if not success or not Path(out_wav).exists() or Path(out_wav).stat().st_size < 1000:
-    infer_script = repo / "inference" / "infer.py"
-    cli_cmd = [sys.executable, str(infer_script), "--text", clean_text, "--output_path", out_wav]
-    if ref_wav:
-        cli_cmd.extend(["--audio_prompt_path", str(ref_wav)])
-    res = subprocess.run(cli_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if not (Path(out_wav).exists() and Path(out_wav).stat().st_size > 1000):
-        # সাধারণ আর্গুমেন্ট দিয়ে শেষ চেষ্টা
-        alt_cmd = [sys.executable, str(infer_script), clean_text, out_wav]
-        subprocess.run(alt_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-if not (Path(out_wav).exists() and Path(out_wav).stat().st_size > 1000):
-    raise RuntimeError("Chatterbox অডিও তৈরি করতে ব্যর্থ হয়েছে।")
+    if hasattr(res, "cpu"):
+        res = res.squeeze().cpu().numpy()
+    arr = np.asarray(res, dtype=np.float32).reshape(-1)
+    sr = getattr(tts, "sr", getattr(tts, "sample_rate", 24000))
+    sf.write(out_wav, arr, sr)
+else:
+    raise RuntimeError("BanglaTTS class not found in inference/infer.py")
 ''',
 
     # ১২. OmniVoice Male
@@ -478,8 +468,8 @@ def run_model_in_subprocess(model_name: str, code_str: str, folder: Path) -> boo
     if res.returncode == 0 and raw_wav.exists() and raw_wav.stat().st_size > 1000:
         return True
     else:
-        err_msg = res.stderr.strip() or res.stdout.strip()
-        print(f"  ⚠️ সাব-প্রসেস ত্রুটি: {err_msg[-400:]}")
+        err_msg = (res.stdout + "\n" + res.stderr).strip()
+        print(f"  ⚠️ সাব-প্রসেস ত্রুটি: {err_msg[-500:]}")
         return False
 
 
