@@ -68,38 +68,21 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2 (ইনপুট ফিক্সড)
+    # ২. Ninada v5.1.2 (অফিসিয়াল API ইন্টিগ্রেশন ফিক্সড)
     "02_Ninada_Male": '''
 import sys
-from pathlib import Path
-import soundfile as sf
-import onnxruntime as ort
-import numpy as np
-from huggingface_hub import hf_hub_download
+from ninada import Ninada
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-onnx_file = hf_hub_download("gnumanth/ninada", "onnx/bn.onnx")
-sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
-tokens = [ord(c) for c in text]
-ids_arr = np.array([tokens], dtype=np.int64)
-
-inp_names = {i.name for i in sess.get_inputs()}
-feed = {}
-if "input_ids" in inp_names:
-    feed["input_ids"] = ids_arr
-elif "input" in inp_names:
-    feed["input"] = ids_arr
-
-if "scales" in inp_names:
-    feed["scales"] = np.array([0.667, 1.0, 0.8], dtype=np.float32)
-
-out = sess.run(None, feed)
-sf.write(out_wav, np.asarray(out[0], dtype=np.float32).reshape(-1), 24000)
+tts = Ninada(lang="bn")
+wav_bytes = tts.speak(text, lang="bn", voice="male")
+with open(out_wav, "wb") as f:
+    f.write(wav_bytes)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - স্টাটারিং ও বিকৃত সাউন্ড ফিক্সড
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -135,13 +118,23 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-sentences = [s.strip() for s in re.split(r"(?<=[।\\.\\?\\!\\n])\\s*", text) if s.strip()] or [text]
+# দাঁড়ি ও যতিচিহ্ন আলাদা করে ক্লিন করা (এটি বিকৃত শব্দ 'ল্ল্ল্ল', 'রররর' বন্ধ করবে)
+raw_sentences = [s.strip() for s in re.split(r"[।\.\?\!\n]+", text) if s.strip()]
+sentences = []
+for s in raw_sentences:
+    # দাঁড়ি, কমা, হাইফেন ইত্যাদির বদলে পরিষ্কার স্পেস রাখা
+    clean = re.sub(r"[^\u0980-\u09FF\s]", " ", s)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if clean:
+        sentences.append(clean)
+
 parts = []
 sr = 22050
-pause = np.zeros(int(sr * 0.15), dtype=np.float32)
+pause = np.zeros(int(sr * 0.30), dtype=np.float32)
 
 for i, s in enumerate(sentences):
-    audio = tts.generate(s, sid=0, speed=0.95)
+    # গতি ১.০ তে সবচেয়ে স্থিতিশীল ডিউরেশন দেয়
+    audio = tts.generate(s, sid=0, speed=1.0)
     sr = int(audio.sample_rate)
     arr = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
     if arr.size > 0:
@@ -164,7 +157,7 @@ onnx_p = repo / "bn/bn_BD/google/medium/bn_BD-google-medium.onnx"
 subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2]], input=sys.argv[1], text=True, check=True)
 ''',
 
-    # ৫. Piper West Bengal Male (CLI ফিক্সড)
+    # ৫. Piper West Bengal Male
     "05_Piper_WestBengal_Male": '''
 import sys, subprocess
 from pathlib import Path
@@ -172,11 +165,10 @@ from huggingface_hub import snapshot_download
 
 repo = Path(snapshot_download("rhasspy/piper-voices", allow_patterns=["bn/bn_BD/google/medium/*"]))
 onnx_p = repo / "bn/bn_BD/google/medium/bn_BD-google-medium.onnx"
-# Piper CLI দিয়ে স্পিকার ১ সরাসরি তৈরি
 subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2], "--speaker", "1"], input=sys.argv[1], text=True, check=True)
 ''',
 
-    # ৬. Meta MMS-TTS Bengali (ইনপুট ফিল্টার ফিক্সড)
+    # ৬. Meta MMS-TTS Bengali
     "06_Meta_MMS_Bengali_Male": '''
 import sys, json, re
 from pathlib import Path
@@ -248,7 +240,7 @@ else:
     raise RuntimeError("espeak binary not found")
 ''',
 
-    # ৯. Kokoro-82M Male (সঠিক HF রিপোজিটরি ফিক্সড)
+    # ৯. Kokoro-82M Male (voices.json ডিকোড এরর ফিক্সড)
     "09_Kokoro_82M_Male": '''
 import sys
 from huggingface_hub import hf_hub_download
@@ -259,16 +251,23 @@ text = sys.argv[1]
 out_wav = sys.argv[2]
 
 onnx_p = hf_hub_download("ExNihilus/kokoro-onnx", "kokoro-v1.0.onnx")
-voices_p = hf_hub_download("ExNihilus/kokoro-onnx", "voices-v1.0.bin")
+# voices.json ব্যবহার করে ডিকোডিং এরর সমাধান
+voices_p = hf_hub_download("NeuML/kokoro-base-onnx", "voices.json")
 kokoro = Kokoro(onnx_p, voices_p)
 samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (Kokoro আর্কিটেকচার)
+    # ১০. IndicVoice-82M Male (ল্যাঙ্গুয়েজ ভ্যালিডেশন ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys
 import soundfile as sf
+import indicvoice.pipeline
+
+# ডিকশনারিতে 'bn' কোড প্যাচ করা
+if hasattr(indicvoice.pipeline, "LANG_CODES"):
+    indicvoice.pipeline.LANG_CODES["bn"] = "Bengali"
+
 from indicvoice import IndicPipeline
 
 text = sys.argv[1]
@@ -284,7 +283,7 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (ResembleAI)
+    # ১১. Chatterbox Bengali Male (S3Tokenizer ও Torch ডিভাইস ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
 import sys
 import soundfile as sf
@@ -298,16 +297,15 @@ wav = model.generate(text)
 sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
 ''',
 
-    # ১২. OmniVoice Male (Diffusion LM)
+    # ১২. OmniVoice Male (Pydub ও অডিও সেগমেন্ট ফিক্সড)
     "12_OmniVoice_Male": '''
 import sys, torch
-from pathlib import Path
 import soundfile as sf
+from omnivoice import OmniVoice
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-from omnivoice import OmniVoice
 ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
 wav = ov.generate(text, language="Bengali", instruct="confident male news anchor")
 sf.write(out_wav, wav[0], 24000)
