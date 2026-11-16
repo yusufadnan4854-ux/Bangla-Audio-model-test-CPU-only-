@@ -32,12 +32,12 @@ jobs:
 
       - name: Install Advanced Model Dependencies (IndicVoice, Chatterbox & OmniVoice)
         run: |
-          pip install peft accelerate omegaconf conformer diffusers librosa pyloudnorm resemble-perth s3tokenizer pydub spacy perth || true
+          pip install loguru peft accelerate omegaconf conformer diffusers librosa pyloudnorm resemble-perth s3tokenizer pydub spacy perth || true
           pip install --no-build-isolation "pkuseg>=0.0.25" || true
           pip install --no-deps chatterbox-tts || true
           pip install git+https://github.com/Bindkushal/indic-g2p.git || true
           
-          # Git LFS সহ আসল বাইনারি ওয়েট নিশ্চিত করে indic-voice ইন্সটল
+          # Git LFS সহ indic-voice প্যাকেজ ক্লোন ও ইন্সটল
           rm -rf /tmp/indic-voice
           git clone https://github.com/Bindkushal/indic-voice.git /tmp/indic-voice
           cd /tmp/indic-voice && git lfs pull && pip install --no-deps . && cd -
