@@ -16,3 +16,9 @@ cython
 pydub
 s3tokenizer
 ninada
+accelerate
+omegaconf
+conformer
+diffusers
+librosa
+pyloudnorm
