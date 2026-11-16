@@ -17,8 +17,8 @@ import numpy as np
 import soundfile as sf
 from huggingface_hub import snapshot_download, hf_hub_download
 
-os.environ["HF_HUB_DISABLE_XET"] = "1"
-os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "240"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
 
 BENCHMARK_TEXT = (
     "আসসালামু আলাইকুম প্রিয় চাকরিপ্রার্থী ভাই ও বোনেরা। আজকের ভিডিওতে আপনাদের সবাইকে আন্তরিক স্বাগতম। "
@@ -254,21 +254,40 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (PyTorch 2.6 weights_only প্যাচ ফিক্সড)
+    # ১০. IndicVoice-82M Male (Git LFS Pointer ও PyTorch 2.6 সম্পূর্ণ ফিক্সড)
     "10_IndicVoice_82M_Male": '''
-import sys
+import sys, os, requests
+from pathlib import Path
 import numpy as np
 import soundfile as sf
 import torch
 
-# PyTorch 2.6+ unpickler ইস্যুর সমাধান
 _orig_load = torch.load
 def _custom_load(*args, **kwargs):
     kwargs["weights_only"] = False
     return _orig_load(*args, **kwargs)
 torch.load = _custom_load
 
+import indicvoice
 import indicvoice.pipeline
+
+# যদি Git LFS এর কারণে ফাইল পয়েন্টার হিসেবে থেকে থাকে, সরাসরি আসল ফাইল ডাউনলোড করা
+voice_dir = Path(indicvoice.__file__).parent / "voices"
+if voice_dir.exists():
+    for pt in voice_dir.glob("*.pt"):
+        if pt.stat().st_size < 1000:
+            url = f"https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/voices/{pt.name}"
+            r = requests.get(url, allow_redirects=True, timeout=60)
+            if r.status_code == 200 and len(r.content) > 1000:
+                pt.write_bytes(r.content)
+
+model_pth = Path(indicvoice.__file__).parent / "indicvoice-v1_0.pth"
+if model_pth.exists() and model_pth.stat().st_size < 1000:
+    url = "https://huggingface.co/Bindkushal/IndicVoice-82M/resolve/main/indicvoice-v1_0.pth"
+    r = requests.get(url, allow_redirects=True, timeout=120)
+    if r.status_code == 200 and len(r.content) > 1000:
+        model_pth.write_bytes(r.content)
+
 if hasattr(indicvoice.pipeline, "LANG_CODES"):
     indicvoice.pipeline.LANG_CODES["bn"] = "Bengali"
 
@@ -289,15 +308,15 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (LoRA ও ইনফারেন্স ফিক্সড)
+    # ১১. Chatterbox Bengali Male (LoRA + সম্পূর্ণ বাক্যের জন্য সেনটেন্স চাংকিং ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
-import sys, inspect
+import sys, re, inspect
 from pathlib import Path
+import numpy as np
 import soundfile as sf
 import torch
 from huggingface_hub import snapshot_download
 
-# PyTorch unpickler প্যাচ
 _orig_load = torch.load
 def _custom_load(*args, **kwargs):
     kwargs["weights_only"] = False
@@ -317,35 +336,46 @@ if not ref_wav.exists():
     w = list(repo.rglob("*.wav"))
     ref_wav = w[0] if w else None
 
-try:
-    import infer
-    if hasattr(infer, "BanglaTTS"):
-        sig = inspect.signature(infer.BanglaTTS.__init__)
-        kw = {}
-        if "device" in sig.parameters: kw["device"] = "cpu"
-        if "repo_root" in sig.parameters: kw["repo_root"] = str(repo)
-        tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
+import infer
+if hasattr(infer, "BanglaTTS"):
+    sig = inspect.signature(infer.BanglaTTS.__init__)
+    kw = {}
+    if "device" in sig.parameters: kw["device"] = "cpu"
+    if "repo_root" in sig.parameters: kw["repo_root"] = str(repo)
+    if "checkpoint_path" in sig.parameters: kw["checkpoint_path"] = str(repo / "checkpoint")
+    tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
 
-        synth_fn = getattr(tts, "generate", None) or getattr(tts, "synthesize", None)
-        sig_synth = inspect.signature(synth_fn)
-        call_kw = {}
-        if "audio_prompt_path" in sig_synth.parameters and ref_wav:
-            call_kw["audio_prompt_path"] = str(ref_wav)
+    synth_fn = getattr(tts, "generate", None) or getattr(tts, "synthesize", None)
+    sig_synth = inspect.signature(synth_fn)
+    call_kw = {}
+    if "audio_prompt_path" in sig_synth.parameters and ref_wav:
+        call_kw["audio_prompt_path"] = str(ref_wav)
+    elif "ref_audio" in sig_synth.parameters and ref_wav:
+        call_kw["ref_audio"] = str(ref_wav)
 
-        wav = synth_fn(text, **call_kw)
-        sr = getattr(tts, "sr", 24000)
+    # পুরো স্ক্রিপ্টকে বাক্যে ভাগ করে প্রতিটি বাক্য সিন্থেসিস করা যাতে ড্রপ না হয়
+    raw_sentences = [s.strip() for s in re.split(r"[।\.\?\!\n]+", text) if len(s.strip()) > 3]
+    parts = []
+    sr = getattr(tts, "sr", 24000)
+    pause = np.zeros(int(sr * 0.25), dtype=np.float32)
+
+    for i, s in enumerate(raw_sentences):
+        wav = synth_fn(s, **call_kw)
+        if isinstance(wav, tuple): wav = wav[0]
         if hasattr(wav, "cpu"): wav = wav.squeeze().cpu().numpy()
-        sf.write(out_wav, wav, sr)
-    else:
-        raise RuntimeError("infer.py ফাইলে BanglaTTS ক্লাস পাওয়া যায়নি")
-except Exception:
-    from chatterbox.tts import ChatterboxTTS
-    model = ChatterboxTTS.from_pretrained(device="cpu")
-    wav = model.generate(text, audio_prompt_path=str(ref_wav)) if ref_wav else model.generate(text)
-    sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
+        arr = np.asarray(wav, dtype=np.float32).reshape(-1)
+        if arr.size > 0:
+            parts.append(arr)
+            if i < len(raw_sentences) - 1:
+                parts.append(pause)
+
+    merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
+    sf.write(out_wav, merged, sr)
+else:
+    raise RuntimeError("BanglaTTS class not found in inference/infer.py")
 ''',
 
-    # ১২. OmniVoice Male (Accelerate ডিপেন্ডেন্সি ফিক্সড)
+    # ১২. OmniVoice Male (সঠিক Instruct কি-ওয়ার্ড ফিক্সড)
     "12_OmniVoice_Male": '''
 import sys, torch
 import soundfile as sf
@@ -354,8 +384,9 @@ from omnivoice import OmniVoice
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
+# OmniVoice শুধুমাত্র তার সাপোর্টেড কি-ওয়ার্ড গ্রহণ করে (e.g., 'male, middle-aged, low pitch')
 ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
-wav = ov.generate(text, language="Bengali", instruct="confident male news anchor")
+wav = ov.generate(text, language="Bengali", instruct="male, middle-aged, low pitch")
 sf.write(out_wav, wav[0], 24000)
 ''',
 
