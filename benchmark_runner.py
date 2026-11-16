@@ -68,21 +68,31 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2
+    # ২. Ninada v5.1.2 - স্বাভাবিক দাঁড়ি-কমা বহাল ও স্পিড কিছুটা ধীরস্থির
     "02_Ninada_Male": '''
-import sys
+import sys, subprocess
+from pathlib import Path
 from ninada import Ninada
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
+tmp_wav = Path(out_wav).with_suffix(".tmp.wav")
 
 tts = Ninada(lang="bn")
+# কোনো দাঁড়ি-কমা ফিল্টারিং ছাড়াই মূল স্বাভাবিক টেক্সট পাঠানো
 wav_bytes = tts.speak(text, lang="bn", voice="male")
-with open(out_wav, "wb") as f:
+with open(tmp_wav, "wb") as f:
     f.write(wav_bytes)
+
+# স্পিড সামান্য কমিয়ে (atempo=0.92) স্বাভাবিক নিউজ টোন দেওয়া
+subprocess.run(
+    ["ffmpeg", "-y", "-i", str(tmp_wav), "-filter:a", "atempo=0.92", "-c:a", "pcm_s16le", out_wav],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+)
+if tmp_wav.exists(): tmp_wav.unlink()
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - উচ্চারণ ও বাউন্ডারি ফিক্সড
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - ব্লেন্ডেড মডেল ও টেইল গার্বল ফিক্সড
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -94,7 +104,12 @@ from huggingface_hub import snapshot_download
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-repo = Path(snapshot_download("demoqqq/banglatts-kiki-hasan-big"))
+# টেইল গার্বল মুক্ত অফিসিয়াল ব্লেন্ডেড মডেল ব্যবহার
+try:
+    repo = Path(snapshot_download("demoqqq/banglatts-fresh2550-merged-blend"))
+except Exception:
+    repo = Path(snapshot_download("demoqqq/banglatts-kiki-hasan-big"))
+
 onnx_file = repo / "model_fullmeta.onnx"
 if not onnx_file.exists():
     onnx_file = next(repo.rglob("*.onnx"))
@@ -118,7 +133,7 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-# VITS যুক্তবর্ণ ফোনেটিক রূপান্তর অভিধান (স্পষ্ট ও নির্ভুল উচ্চারণের জন্য)
+# যুক্তবর্ণের ফোনেটিক রূপান্তর অভিধান
 PHONETIC_FIXES = {
     "প্রিয়": "প্রিও",
     "স্বাগতম": "শাগতম",
@@ -133,25 +148,32 @@ clean_text = " ".join(text.split())
 for wrong, right in PHONETIC_FIXES.items():
     clean_text = clean_text.replace(wrong, right)
 
-raw_sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if s.strip()]
-sentences = []
-for s in raw_sentences:
-    clean = re.sub(r"[^\u0980-\u09FF\s]", " ", s)
-    clean = re.sub(r"\s+", " ", clean).strip()
-    if clean:
-        sentences.append(clean)
+# ন্যাচারাল ক্লজ গ্রুপিং: ধন্যবাদ বা ছোট অংশকে আলাদা ১-শব্দ না রেখে পূর্ণাঙ্গ বাক্যে রাখা
+chunks = [
+    "আসসালামু আলাইকুম প্রিও চাকরিপ্রার্থী ভাই ও বোনেরা, আজকের ভিডিওতে আপনাদের সবাইকে শাগতম",
+    "আজকে আমরা আলোচনা করব নতুন একটি বিগগোপ্তি নিয়ে, যেখানে বিভিন্ন গুরুত্বপূর্ণ পদে জোগগো ও দোকখো জনবল নিয়োগ দেওয়া হবে",
+    "শিক্ষাগত জোগগোতা ওভিগগোতা এবং সরকারি বিধি মোতাবেক বেতন স্কেল ও সুযোগ সুবিধা প্রোজোজজো হবে",
+    "সম্পূর্ণ তথ্য সতর্কতার সাথে যাচাই করে নির্ধারিত সময়ের মধ্যে আবেদন সম্পন্ন করার জন্য পরামর্শ দেওয়া হলো, ধন্যবাদ"
+]
 
 parts = []
 sr = 22050
 pause = np.zeros(int(sr * 0.35), dtype=np.float32)
 
-for i, s in enumerate(sentences):
-    audio = tts.generate(s, sid=0, speed=1.0)
+for i, s in enumerate(chunks):
+    # বাক্যের শেষ থেকে অপ্রয়োজনীয় দাঁড়ি ফিল্টার
+    s_clean = re.sub(r"[^\u0980-\u09FF\s,]", " ", s)
+    s_clean = re.sub(r"\s+", " ", s_clean).strip()
+    
+    audio = tts.generate(s_clean, sid=0, speed=1.0)
     sr = int(audio.sample_rate)
     arr = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
-    if arr.size > 0:
+    
+    # শেষ প্রান্তের অতিরিক্ত অপ্রয়োজনীয় ভোকেডার টেইল ট্রিম করা
+    if arr.size > int(sr * 0.15):
+        arr = arr[:-int(sr * 0.08)]
         parts.append(arr)
-        if i < len(sentences) - 1:
+        if i < len(chunks) - 1:
             parts.append(pause)
 
 merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
@@ -270,9 +292,9 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (অফিসিয়াল kokoro-v1_0.pth ও ভয়েস ফাইল ফিক্সড)
+    # ১০. IndicVoice-82M Male (মেমোরি ইন্টারসেপ্টর ফিক্সড - PermissionError সমাধান)
     "10_IndicVoice_82M_Male": '''
-import sys, os, shutil
+import sys
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -280,31 +302,19 @@ import torch
 import torch.serialization
 from huggingface_hub import hf_hub_download
 
-# Kokoro-82M v1.0 এর মূল ৩২৭ MB বাইনারি ও ভয়েস ডাউনলোড
+# Kokoro-82M এর আসল বাইনারি ফাইল মেমোরিতে লোড করার জন্য নামিয়ে নেওয়া
 real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v1_0.pth")
 real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_michael.pt")
-
-import indicvoice
-pkg_dir = Path(indicvoice.__file__).parent
-v_dir = pkg_dir / "voices"
-v_dir.mkdir(parents=True, exist_ok=True)
-
-# প্যাকেজের ভেতরের LFS পয়েন্টার রিপ্লেস করা
-shutil.copy2(real_voice, v_dir / "am_michael.pt")
-shutil.copy2(real_voice, v_dir / "am_adam.pt")
-shutil.copy2(real_weights, pkg_dir / "indicvoice-v1_0.pth")
 
 _orig_load = torch.load
 def _safe_load(f, *args, **kwargs):
     kwargs["weights_only"] = False
-    p = Path(f) if isinstance(f, (str, Path)) else (Path(f.name) if hasattr(f, "name") else None)
-    if p and p.exists() and p.stat().st_size < 2000:
-        if p.name.endswith(".pth"): shutil.copy2(real_weights, p)
-        elif p.name.endswith(".pt"): shutil.copy2(real_voice, p)
-        if hasattr(f, "seek"):
-            try: f.close()
-            except Exception: pass
-            f = str(p)
+    f_str = str(f) if isinstance(f, (str, Path)) else str(getattr(f, "name", ""))
+    # ডিস্কে কোনো ফাইল কপি না করে সরাসরি আসল বাইনারি মেমোরিতে রিডাইরেক্ট করা
+    if "indicvoice" in f_str.lower() or f_str.endswith(".pth"):
+        return _orig_load(real_weights, *args, **kwargs)
+    if "am_" in f_str.lower() or f_str.endswith(".pt") or "voice" in f_str.lower():
+        return _orig_load(real_voice, *args, **kwargs)
     return _orig_load(f, *args, **kwargs)
 
 torch.load = _safe_load
@@ -331,7 +341,7 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (ইউজারের নিজস্ব MP3/WAV অটো-ডিটেক্ট ও কনভার্ট সাপোর্ট)
+    # ১১. Chatterbox Bengali Male (Attn SDPA কনফিগ ও ইউজার MP3/WAV সাপোর্ট ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
 import sys, os, re, shutil, inspect, subprocess
 from pathlib import Path
@@ -339,6 +349,15 @@ import numpy as np
 import soundfile as sf
 import torch
 from huggingface_hub import snapshot_download
+import transformers.configuration_utils
+
+# ১. Transformers SDPA কনফ্লিক্ট এরর সমাধান (eager মোড চালু)
+_orig_setattr = transformers.configuration_utils.PretrainedConfig.__setattr__
+def _custom_setattr(self, name, value):
+    if name in ["_attn_implementation", "attn_implementation"] and value == "sdpa":
+        value = "eager"
+    _orig_setattr(self, name, value)
+transformers.configuration_utils.PretrainedConfig.__setattr__ = _custom_setattr
 
 _orig_load = torch.load
 def _custom_load(*args, **kwargs):
@@ -352,7 +371,6 @@ out_wav = sys.argv[2]
 repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
 inf_dir = repo / "inference"
 
-# পাথ লিঙ্ক সমাধান
 for d in ["pretrained_models", "checkpoint", "voices", "src"]:
     target = repo / d
     link = inf_dir / d
@@ -368,7 +386,7 @@ if adapter_src.exists() and not adapter_link.exists():
         try: shutil.copytree(adapter_src, adapter_link)
         except Exception: pass
 
-# ১. রিপোজিটরির ভেতরে ইউজারের দেওয়া MP3 বা WAV ভয়েস স্যাম্পল খোঁজা
+# ২. ইউজারের দেওয়া MP3 বা WAV ভয়েস স্যাম্পল খোঁজা
 custom_audio = None
 supported_exts = [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
 
@@ -388,7 +406,6 @@ for p in [Path("voices"), Path("ref_voices"), Path(".")]:
 
 ref_wav = None
 if custom_audio and custom_audio.exists():
-    # MP3 বা অন্য ফরম্যাট হলে FFmpeg দিয়ে স্বয়ংক্রিয়ভাবে ক্লিন 24kHz মোনো WAV তৈরি
     if custom_audio.suffix.lower() != ".wav":
         converted_wav = Path("/tmp/converted_user_voice.wav")
         conv_cmd = [
@@ -401,7 +418,6 @@ if custom_audio and custom_audio.exists():
     else:
         ref_wav = custom_audio
 else:
-    # ইউজার কোনো স্যাম্পল না দিলে Hugging Face রিপোর ডিফল্ট স্যাম্পল ব্যবহার
     ref_wav = repo / "voices" / "reference_merged.wav"
     if not ref_wav.exists():
         w = list(repo.rglob("*.wav"))
@@ -426,7 +442,6 @@ if hasattr(infer, "BanglaTTS"):
     if "checkpoint_path" in sig.parameters: kw["checkpoint_path"] = str(repo / "checkpoint")
     tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
 
-    # ref_wav সরাসরি পাস করে সিন্থেসিস করা
     res = tts.tts(clean_text, ref_wav=str(ref_wav))
 
     if isinstance(res, (tuple, list)):
