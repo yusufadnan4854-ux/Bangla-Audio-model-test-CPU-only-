@@ -31,7 +31,7 @@ jobs:
 
       - name: Install Advanced Model Dependencies (IndicVoice, Chatterbox & OmniVoice)
         run: |
-          pip install pydub s3tokenizer spacy perth || true
+          pip install accelerate omegaconf conformer diffusers librosa pyloudnorm resemble-perth s3tokenizer pydub spacy perth || true
           pip install --no-build-isolation "pkuseg>=0.0.25" || true
           pip install --no-deps chatterbox-tts || true
           pip install git+https://github.com/Bindkushal/indic-g2p.git || true
@@ -56,6 +56,10 @@ jobs:
         env:
           FOLDER_ID: ${{ secrets.GDRIVE_TTS_FOLDER_ID }}
         run: |
-          echo "📤 গুগল ড্রাইভে অডিও ফোল্ডারগুলো কপি করা হচ্ছে..."
-          rclone copy ./tts_results "gdrive:" --drive-root-folder-id="$FOLDER_ID" --fast-list -P
-          echo "✅ গুগল ড্রাইভে আপলোড সফল!"
+          echo "📤 গুগল ড্রাইভে আগের তৈরি অডিও রিপ্লেস করে নতুন অডিও আপলোড করা হচ্ছে..."
+          # --ignore-times ড্রাইভে থাকা ফাইল স্কিপ না করে সরাসরি রিপ্লেস/ওভাররাইট করবে
+          # --drive-use-trash=false ড্রাইভের ট্র্যাশে ফাইল জমা হওয়া বন্ধ করবে
+          rclone copy ./tts_results "gdrive:" --drive-root-folder-id="$FOLDER_ID" --ignore-times --drive-use-trash=false --fast-list -P
+          # গুগল ড্রাইভে ডুপ্লিকেট থাকলে শুধু নতুনটি রেখে বাকিটা মুছে ফেলবে
+          rclone dedupe newest "gdrive:" --drive-root-folder-id="$FOLDER_ID" -q || true
+          echo "✅ গুগল ড্রাইভে ওভাররাইট ও রিপ্লেস সফল হয়েছে!"
