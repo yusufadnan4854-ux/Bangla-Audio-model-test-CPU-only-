@@ -31,7 +31,7 @@ jobs:
 
       - name: Install Advanced Model Dependencies (IndicVoice, Chatterbox & OmniVoice)
         run: |
-          pip install spacy perth || true
+          pip install pydub s3tokenizer spacy perth || true
           pip install --no-build-isolation "pkuseg>=0.0.25" || true
           pip install --no-deps chatterbox-tts || true
           pip install git+https://github.com/Bindkushal/indic-g2p.git || true
