@@ -27,11 +27,11 @@ BENCHMARK_TEXT = (
     "সম্পূর্ণ তথ্য সতর্কতার সাথে যাচাই করে নির্ধারিত সময়ের মধ্যে আবেদন সম্পন্ন করার জন্য পরামর্শ দেওয়া হলো। ধন্যবাদ।"
 )
 
-OUTPUT_ROOT = Path("tts_results")
+OUTPUT_ROOT = Path("tts_results").resolve()
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
-WORKERS_DIR = Path("/tmp/tts_subworkers")
+WORKERS_DIR = Path("/tmp/tts_subworkers").resolve()
 WORKERS_DIR.mkdir(parents=True, exist_ok=True)
-CONFIG_FILE = Path("models_config.json")
+CONFIG_FILE = Path("models_config.json").resolve()
 
 
 def apply_studio_mastering(raw_wav: Path, mastered_wav: Path):
@@ -68,25 +68,23 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2 - স্বাভাবিক দাঁড়ি-কমা বহাল ও স্পিড কিছুটা ধীরস্থির
+    # ২. Ninada v5.1.2 - স্বাভাবিক দাঁড়ি-কমা বহাল ও স্বাভাবিক স্পিড
     "02_Ninada_Male": '''
 import sys, subprocess
 from pathlib import Path
 from ninada import Ninada
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
-tmp_wav = Path(out_wav).with_suffix(".tmp.wav")
+out_wav = Path(sys.argv[2]).resolve()
+tmp_wav = out_wav.with_suffix(".tmp.wav")
 
 tts = Ninada(lang="bn")
-# কোনো দাঁড়ি-কমা ফিল্টারিং ছাড়াই মূল স্বাভাবিক টেক্সট পাঠানো
 wav_bytes = tts.speak(text, lang="bn", voice="male")
 with open(tmp_wav, "wb") as f:
     f.write(wav_bytes)
 
-# স্পিড সামান্য কমিয়ে (atempo=0.92) স্বাভাবিক নিউজ টোন দেওয়া
 subprocess.run(
-    ["ffmpeg", "-y", "-i", str(tmp_wav), "-filter:a", "atempo=0.92", "-c:a", "pcm_s16le", out_wav],
+    ["ffmpeg", "-y", "-i", str(tmp_wav), "-filter:a", "atempo=0.92", "-c:a", "pcm_s16le", str(out_wav)],
     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
 )
 if tmp_wav.exists(): tmp_wav.unlink()
@@ -102,9 +100,8 @@ import sherpa_onnx
 from huggingface_hub import snapshot_download
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+out_wav = Path(sys.argv[2]).resolve()
 
-# টেইল গার্বল মুক্ত অফিসিয়াল ব্লেন্ডেড মডেল ব্যবহার
 try:
     repo = Path(snapshot_download("demoqqq/banglatts-fresh2550-merged-blend"))
 except Exception:
@@ -133,7 +130,6 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-# যুক্তবর্ণের ফোনেটিক রূপান্তর অভিধান
 PHONETIC_FIXES = {
     "প্রিয়": "প্রিও",
     "স্বাগতম": "শাগতম",
@@ -148,7 +144,6 @@ clean_text = " ".join(text.split())
 for wrong, right in PHONETIC_FIXES.items():
     clean_text = clean_text.replace(wrong, right)
 
-# ন্যাচারাল ক্লজ গ্রুপিং: ধন্যবাদ বা ছোট অংশকে আলাদা ১-শব্দ না রেখে পূর্ণাঙ্গ বাক্যে রাখা
 chunks = [
     "আসসালামু আলাইকুম প্রিও চাকরিপ্রার্থী ভাই ও বোনেরা, আজকের ভিডিওতে আপনাদের সবাইকে শাগতম",
     "আজকে আমরা আলোচনা করব নতুন একটি বিগগোপ্তি নিয়ে, যেখানে বিভিন্ন গুরুত্বপূর্ণ পদে জোগগো ও দোকখো জনবল নিয়োগ দেওয়া হবে",
@@ -161,7 +156,6 @@ sr = 22050
 pause = np.zeros(int(sr * 0.35), dtype=np.float32)
 
 for i, s in enumerate(chunks):
-    # বাক্যের শেষ থেকে অপ্রয়োজনীয় দাঁড়ি ফিল্টার
     s_clean = re.sub(r"[^\u0980-\u09FF\s,]", " ", s)
     s_clean = re.sub(r"\s+", " ", s_clean).strip()
     
@@ -169,7 +163,6 @@ for i, s in enumerate(chunks):
     sr = int(audio.sample_rate)
     arr = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
     
-    # শেষ প্রান্তের অতিরিক্ত অপ্রয়োজনীয় ভোকেডার টেইল ট্রিম করা
     if arr.size > int(sr * 0.15):
         arr = arr[:-int(sr * 0.08)]
         parts.append(arr)
@@ -177,7 +170,7 @@ for i, s in enumerate(chunks):
             parts.append(pause)
 
 merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
-sf.write(out_wav, merged, sr, subtype="PCM_16")
+sf.write(str(out_wav), merged, sr, subtype="PCM_16")
 ''',
 
     # ৪. Piper Bangladeshi Male
@@ -212,7 +205,7 @@ import onnxruntime as ort
 from huggingface_hub import snapshot_download
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+out_wav = Path(sys.argv[2]).resolve()
 
 repo = Path(snapshot_download("naklitechie/mms-tts-bn-ONNX"))
 vocab = json.loads((repo / "vocab.json").read_text(encoding="utf-8"))
@@ -243,7 +236,7 @@ for i, s in enumerate(sentences):
         parts.append(pause)
 
 merged = np.concatenate(parts) if len(parts) > 1 else parts[0]
-sf.write(out_wav, merged, sr, subtype="PCM_16")
+sf.write(str(out_wav), merged, sr, subtype="PCM_16")
 ''',
 
     # ৭. Microsoft Edge TTS
@@ -253,15 +246,15 @@ from pathlib import Path
 import edge_tts
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
-raw_mp3 = Path(out_wav).with_suffix(".mp3")
+out_wav = Path(sys.argv[2]).resolve()
+raw_mp3 = out_wav.with_suffix(".mp3")
 
 async def _make():
     comm = edge_tts.Communicate(text, "bn-BD-PradeepNeural", rate="-6%")
     await comm.save(str(raw_mp3))
 
 asyncio.run(_make())
-subprocess.run(["ffmpeg", "-y", "-i", str(raw_mp3), "-ar", "24000", "-ac", "1", out_wav], check=True)
+subprocess.run(["ffmpeg", "-y", "-i", str(raw_mp3), "-ar", "24000", "-ac", "1", str(out_wav)], check=True)
 if raw_mp3.exists(): raw_mp3.unlink()
 ''',
 
@@ -278,21 +271,22 @@ else:
     # ৯. Kokoro-82M Male
     "09_Kokoro_82M_Male": '''
 import sys
+from pathlib import Path
 from huggingface_hub import hf_hub_download
 from kokoro_onnx import Kokoro
 import soundfile as sf
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+out_wav = Path(sys.argv[2]).resolve()
 
 onnx_p = hf_hub_download("ExNihilus/kokoro-onnx", "kokoro-v1.0.onnx")
 voices_p = hf_hub_download("NeuML/kokoro-base-onnx", "voices.json")
 kokoro = Kokoro(onnx_p, voices_p)
 samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
-sf.write(out_wav, samples, sr)
+sf.write(str(out_wav), samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (মেমোরি ইন্টারসেপ্টর ফিক্সড - PermissionError সমাধান)
+    # ১০. IndicVoice-82M Male (.pth ও .pt এক্সটেনশন ভিত্তিক মেমোরি লোডার ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys
 from pathlib import Path
@@ -302,18 +296,18 @@ import torch
 import torch.serialization
 from huggingface_hub import hf_hub_download
 
-# Kokoro-82M এর আসল বাইনারি ফাইল মেমোরিতে লোড করার জন্য নামিয়ে নেওয়া
 real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v1_0.pth")
 real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_michael.pt")
 
 _orig_load = torch.load
 def _safe_load(f, *args, **kwargs):
     kwargs["weights_only"] = False
-    f_str = str(f) if isinstance(f, (str, Path)) else str(getattr(f, "name", ""))
-    # ডিস্কে কোনো ফাইল কপি না করে সরাসরি আসল বাইনারি মেমোরিতে রিডাইরেক্ট করা
-    if "indicvoice" in f_str.lower() or f_str.endswith(".pth"):
+    fname = Path(f).name.lower() if isinstance(f, (str, Path)) else getattr(f, "name", "").lower()
+    
+    # এক্সটেনশন দেখে পৃথকভাবে মডেল ও ভয়েস লোড করা
+    if fname.endswith(".pth"):
         return _orig_load(real_weights, *args, **kwargs)
-    if "am_" in f_str.lower() or f_str.endswith(".pt") or "voice" in f_str.lower():
+    elif fname.endswith(".pt"):
         return _orig_load(real_voice, *args, **kwargs)
     return _orig_load(f, *args, **kwargs)
 
@@ -327,7 +321,7 @@ if hasattr(indicvoice.pipeline, "LANG_CODES"):
 from indicvoice import IndicPipeline
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+out_wav = Path(sys.argv[2]).resolve()
 
 pipeline = IndicPipeline(lang_code="bn", repo_id="Bindkushal/IndicVoice-82M")
 audio_chunks = []
@@ -336,12 +330,12 @@ for gs, ps, audio in pipeline(text, voice="am_michael"):
 
 if audio_chunks:
     merged = np.concatenate(audio_chunks) if len(audio_chunks) > 1 else audio_chunks[0]
-    sf.write(out_wav, merged, 24000)
+    sf.write(str(out_wav), merged, 24000)
 else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (Attn SDPA কনফিগ ও ইউজার MP3/WAV সাপোর্ট ফিক্সড)
+    # ১১. Chatterbox Bengali Male (Absolute Path ফিক্সড - System Error সমাধান)
     "11_Chatterbox_Bengali_Male": '''
 import sys, os, re, shutil, inspect, subprocess
 from pathlib import Path
@@ -351,7 +345,6 @@ import torch
 from huggingface_hub import snapshot_download
 import transformers.configuration_utils
 
-# ১. Transformers SDPA কনফ্লিক্ট এরর সমাধান (eager মোড চালু)
 _orig_setattr = transformers.configuration_utils.PretrainedConfig.__setattr__
 def _custom_setattr(self, name, value):
     if name in ["_attn_implementation", "attn_implementation"] and value == "sdpa":
@@ -366,7 +359,9 @@ def _custom_load(*args, **kwargs):
 torch.load = _custom_load
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+# ডিরেক্টরি পরিবর্তনের পূর্বে পাথকে অ্যাবসোলিউট (Absolute Path) করা
+out_wav = Path(sys.argv[2]).resolve()
+out_wav.parent.mkdir(parents=True, exist_ok=True)
 
 repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
 inf_dir = repo / "inference"
@@ -386,11 +381,11 @@ if adapter_src.exists() and not adapter_link.exists():
         try: shutil.copytree(adapter_src, adapter_link)
         except Exception: pass
 
-# ২. ইউজারের দেওয়া MP3 বা WAV ভয়েস স্যাম্পল খোঁজা
+# ইউজারের দেওয়া MP3 বা WAV ভয়েস স্যাম্পল খোঁজা
 custom_audio = None
 supported_exts = [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
 
-for p in [Path("voices"), Path("ref_voices"), Path(".")]:
+for p in [Path("voices").resolve(), Path("ref_voices").resolve(), Path(".").resolve()]:
     if p.exists():
         files = [
             f for f in p.iterdir()
@@ -451,7 +446,7 @@ if hasattr(infer, "BanglaTTS"):
     
     arr = np.asarray(res, dtype=np.float32).reshape(-1)
     sr = getattr(tts, "sr", getattr(tts, "sample_rate", 24000))
-    sf.write(out_wav, arr, sr)
+    sf.write(str(out_wav), arr, sr)
 else:
     raise RuntimeError("BanglaTTS class not found in inference/infer.py")
 ''',
@@ -459,17 +454,18 @@ else:
     # ১২. OmniVoice Male
     "12_OmniVoice_Male": '''
 import sys, torch
+from pathlib import Path
 import soundfile as sf
 from omnivoice import OmniVoice
 
 torch.set_num_threads(2)
 
 text = sys.argv[1]
-out_wav = sys.argv[2]
+out_wav = Path(sys.argv[2]).resolve()
 
 ov = OmniVoice.from_pretrained("k2-fsa/OmniVoice", device_map="cpu", dtype=torch.float32, load_asr=False)
 wav = ov.generate(text, language="Bengali", instruct="male, low pitch", num_step=8)
-sf.write(out_wav, wav[0], 24000)
+sf.write(str(out_wav), wav[0], 24000)
 ''',
 
     # ১৩. RHVoice Bengali
@@ -488,7 +484,7 @@ else:
 def run_model_in_subprocess(model_name: str, code_str: str, folder: Path) -> bool:
     worker_file = WORKERS_DIR / f"{model_name}.py"
     worker_file.write_text(code_str, encoding="utf-8")
-    raw_wav = folder / "raw.wav"
+    raw_wav = (folder / "raw.wav").resolve()
 
     cmd = [sys.executable, str(worker_file), BENCHMARK_TEXT, str(raw_wav)]
     res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=600)
