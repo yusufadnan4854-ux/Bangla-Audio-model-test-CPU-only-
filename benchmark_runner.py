@@ -68,7 +68,7 @@ wav = tts.synthesize(sys.argv[1], voice="male", speed=0.95)
 tts.save_wav(wav, sys.argv[2])
 ''',
 
-    # ২. Ninada v5.1.2 (অফিসিয়াল API ইন্টিগ্রেশন ফিক্সড)
+    # ২. Ninada v5.1.2
     "02_Ninada_Male": '''
 import sys
 from ninada import Ninada
@@ -82,7 +82,7 @@ with open(out_wav, "wb") as f:
     f.write(wav_bytes)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - স্টাটারিং ও বিকৃত সাউন্ড ফিক্সড
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -118,11 +118,9 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-# দাঁড়ি ও যতিচিহ্ন আলাদা করে ক্লিন করা (এটি বিকৃত শব্দ 'ল্ল্ল্ল', 'রররর' বন্ধ করবে)
 raw_sentences = [s.strip() for s in re.split(r"[।\.\?\!\n]+", text) if s.strip()]
 sentences = []
 for s in raw_sentences:
-    # দাঁড়ি, কমা, হাইফেন ইত্যাদির বদলে পরিষ্কার স্পেস রাখা
     clean = re.sub(r"[^\u0980-\u09FF\s]", " ", s)
     clean = re.sub(r"\s+", " ", clean).strip()
     if clean:
@@ -133,7 +131,6 @@ sr = 22050
 pause = np.zeros(int(sr * 0.30), dtype=np.float32)
 
 for i, s in enumerate(sentences):
-    # গতি ১.০ তে সবচেয়ে স্থিতিশীল ডিউরেশন দেয়
     audio = tts.generate(s, sid=0, speed=1.0)
     sr = int(audio.sample_rate)
     arr = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
@@ -165,7 +162,7 @@ from huggingface_hub import snapshot_download
 
 repo = Path(snapshot_download("rhasspy/piper-voices", allow_patterns=["bn/bn_BD/google/medium/*"]))
 onnx_p = repo / "bn/bn_BD/google/medium/bn_BD-google-medium.onnx"
-subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2], "--speaker", "1"], input=sys.argv[1], text=True, check=True)
+subprocess.run(["piper", "--model", str(onnx_p), "--output_file", sys.argv[2]], input=sys.argv[1], text=True, check=True)
 ''',
 
     # ৬. Meta MMS-TTS Bengali
@@ -240,7 +237,7 @@ else:
     raise RuntimeError("espeak binary not found")
 ''',
 
-    # ৯. Kokoro-82M Male (voices.json ডিকোড এরর ফিক্সড)
+    # ৯. Kokoro-82M Male
     "09_Kokoro_82M_Male": '''
 import sys
 from huggingface_hub import hf_hub_download
@@ -251,20 +248,27 @@ text = sys.argv[1]
 out_wav = sys.argv[2]
 
 onnx_p = hf_hub_download("ExNihilus/kokoro-onnx", "kokoro-v1.0.onnx")
-# voices.json ব্যবহার করে ডিকোডিং এরর সমাধান
 voices_p = hf_hub_download("NeuML/kokoro-base-onnx", "voices.json")
 kokoro = Kokoro(onnx_p, voices_p)
 samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (ল্যাঙ্গুয়েজ ভ্যালিডেশন ফিক্সড)
+    # ১০. IndicVoice-82M Male (PyTorch 2.6 weights_only প্যাচ ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys
+import numpy as np
 import soundfile as sf
-import indicvoice.pipeline
+import torch
 
-# ডিকশনারিতে 'bn' কোড প্যাচ করা
+# PyTorch 2.6+ unpickler ইস্যুর সমাধান
+_orig_load = torch.load
+def _custom_load(*args, **kwargs):
+    kwargs["weights_only"] = False
+    return _orig_load(*args, **kwargs)
+torch.load = _custom_load
+
+import indicvoice.pipeline
 if hasattr(indicvoice.pipeline, "LANG_CODES"):
     indicvoice.pipeline.LANG_CODES["bn"] = "Bengali"
 
@@ -277,27 +281,71 @@ pipeline = IndicPipeline(lang_code="bn", repo_id="Bindkushal/IndicVoice-82M")
 audio_chunks = []
 for gs, ps, audio in pipeline(text, voice="am_adam"):
     audio_chunks.append(audio)
+
 if audio_chunks:
-    sf.write(out_wav, audio_chunks[0], 24000)
+    merged = np.concatenate(audio_chunks) if len(audio_chunks) > 1 else audio_chunks[0]
+    sf.write(out_wav, merged, 24000)
 else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (S3Tokenizer ও Torch ডিভাইস ফিক্সড)
+    # ১১. Chatterbox Bengali Male (LoRA ও ইনফারেন্স ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
-import sys
+import sys, inspect
+from pathlib import Path
 import soundfile as sf
-from chatterbox.tts import ChatterboxTTS
+import torch
+from huggingface_hub import snapshot_download
+
+# PyTorch unpickler প্যাচ
+_orig_load = torch.load
+def _custom_load(*args, **kwargs):
+    kwargs["weights_only"] = False
+    return _orig_load(*args, **kwargs)
+torch.load = _custom_load
 
 text = sys.argv[1]
 out_wav = sys.argv[2]
 
-model = ChatterboxTTS.from_pretrained(repo_id="Banglabox/chatterbox-bangla-tts", device="cpu")
-wav = model.generate(text)
-sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
+repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
+sys.path.insert(0, str(repo / "src"))
+sys.path.insert(0, str(repo / "inference"))
+sys.path.insert(0, str(repo))
+
+ref_wav = repo / "voices" / "reference_merged.wav"
+if not ref_wav.exists():
+    w = list(repo.rglob("*.wav"))
+    ref_wav = w[0] if w else None
+
+try:
+    import infer
+    if hasattr(infer, "BanglaTTS"):
+        sig = inspect.signature(infer.BanglaTTS.__init__)
+        kw = {}
+        if "device" in sig.parameters: kw["device"] = "cpu"
+        if "repo_root" in sig.parameters: kw["repo_root"] = str(repo)
+        tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
+
+        synth_fn = getattr(tts, "generate", None) or getattr(tts, "synthesize", None)
+        sig_synth = inspect.signature(synth_fn)
+        call_kw = {}
+        if "audio_prompt_path" in sig_synth.parameters and ref_wav:
+            call_kw["audio_prompt_path"] = str(ref_wav)
+
+        wav = synth_fn(text, **call_kw)
+        sr = getattr(tts, "sr", 24000)
+        if hasattr(wav, "cpu"): wav = wav.squeeze().cpu().numpy()
+        sf.write(out_wav, wav, sr)
+    else:
+        raise RuntimeError("infer.py ফাইলে BanglaTTS ক্লাস পাওয়া যায়নি")
+except Exception:
+    from chatterbox.tts import ChatterboxTTS
+    model = ChatterboxTTS.from_pretrained(device="cpu")
+    wav = model.generate(text, audio_prompt_path=str(ref_wav)) if ref_wav else model.generate(text)
+    sf.write(out_wav, wav.squeeze().cpu().numpy(), model.sr)
 ''',
 
-    # ১২. OmniVoice Male (Pydub ও অডিও সেগমেন্ট ফিক্সড)
+    # ১২. OmniVoice Male (Accelerate ডিপেন্ডেন্সি ফিক্সড)
     "12_OmniVoice_Male": '''
 import sys, torch
 import soundfile as sf
