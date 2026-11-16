@@ -82,7 +82,7 @@ with open(out_wav, "wb") as f:
     f.write(wav_bytes)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - যুক্তবর্ণের উচ্চারণ ও বাউন্ডারি ফিক্সড
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -118,7 +118,6 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
-# VITS-এর জন্য যুক্তবর্ণ ফোনেটিক রূপান্তর ডিকশনারি (উচ্চারণ নিখুঁত করার জন্য)
 PHONETIC_FIXES = {
     "প্রিয়": "প্রিও",
     "স্বাগতম": "শাগতম",
@@ -270,7 +269,7 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (সরাসরি আসল বাইনারি ওয়েটস প্রি-ডাউনলোড ফিক্সড)
+    # ১০. IndicVoice-82M Male (সঠিক kokoro-v1_0.pth ও ভয়েস ফাইল ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys, os, shutil
 from pathlib import Path
@@ -280,22 +279,19 @@ import torch
 import torch.serialization
 from huggingface_hub import hf_hub_download
 
-# আসল ৩২০ মেগাবাইটের কোকোরো মডেল ওয়েট এবং মেল ভয়েস নামিয়ে নেওয়া
-real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v0_19.pth")
-real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_adam.pt")
+# Kokoro-82M v1.0 এর অফিশিয়াল ৩২৭ মেগাবাইটের মূল ফাইল ডাউনলোড
+real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v1_0.pth")
+real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_michael.pt")
 
 import indicvoice
-v_dir = Path(indicvoice.__file__).parent / "voices"
-if v_dir.exists():
-    for f in v_dir.glob("*.pt"):
-        if f.stat().st_size < 2000:
-            shutil.copy2(real_voice, f)
+pkg_dir = Path(indicvoice.__file__).parent
+v_dir = pkg_dir / "voices"
+v_dir.mkdir(parents=True, exist_ok=True)
 
-cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-if cache_dir.exists():
-    for f in cache_dir.rglob("*.pth"):
-        if f.stat().st_size < 2000:
-            shutil.copy2(real_weights, f)
+# LFS পয়েন্টার রিপ্লেস করা
+shutil.copy2(real_voice, v_dir / "am_michael.pt")
+shutil.copy2(real_voice, v_dir / "am_adam.pt")
+shutil.copy2(real_weights, pkg_dir / "indicvoice-v1_0.pth")
 
 _orig_load = torch.load
 def _safe_load(f, *args, **kwargs):
@@ -324,7 +320,7 @@ out_wav = sys.argv[2]
 
 pipeline = IndicPipeline(lang_code="bn", repo_id="Bindkushal/IndicVoice-82M")
 audio_chunks = []
-for gs, ps, audio in pipeline(text, voice="am_adam"):
+for gs, ps, audio in pipeline(text, voice="am_michael"):
     audio_chunks.append(audio)
 
 if audio_chunks:
@@ -334,7 +330,7 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (সকল আউটপুট টাইপ ও ডাইনামিক লোডার ফিক্সড)
+    # ১১. Chatterbox Bengali Male (রেফারেন্স ভয়েস স্যাম্পল ref_wav ইন্টিগ্রেশন ফিক্সড)
     "11_Chatterbox_Bengali_Male": '''
 import sys, os, re, shutil, inspect
 from pathlib import Path
@@ -355,6 +351,7 @@ out_wav = sys.argv[2]
 repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
 inf_dir = repo / "inference"
 
+# পাথ সিমলিংক সমাধান
 for d in ["pretrained_models", "checkpoint", "voices", "src"]:
     target = repo / d
     link = inf_dir / d
@@ -375,10 +372,14 @@ sys.path.insert(0, str(repo / "src"))
 sys.path.insert(0, str(repo / "inference"))
 sys.path.insert(0, str(repo))
 
+# রেফারেন্স অডিও স্যাম্পল লোড করা
 ref_wav = repo / "voices" / "reference_merged.wav"
 if not ref_wav.exists():
     w = list(repo.rglob("*.wav"))
     ref_wav = w[0] if w else None
+
+if not ref_wav:
+    raise RuntimeError("Chatterbox-এর জন্য কোনো রেফারেন্স অডিও স্যাম্পল (.wav) পাওয়া যায়নি!")
 
 clean_text = text.replace("\\n", " ")
 
@@ -391,36 +392,14 @@ if hasattr(infer, "BanglaTTS"):
     if "checkpoint_path" in sig.parameters: kw["checkpoint_path"] = str(repo / "checkpoint")
     tts = infer.BanglaTTS(**kw) if kw else infer.BanglaTTS()
 
-    synth_fn = getattr(tts, "generate", None) or getattr(tts, "infer", None) or getattr(tts, "tts", None) or getattr(tts, "synthesize", None)
-    if synth_fn is None and callable(tts):
-        synth_fn = tts
+    # ref_wav সরাসরি পাস করে সিন্থেসিস করা
+    res = tts.tts(clean_text, ref_wav=str(ref_wav))
 
-    if synth_fn is None:
-        callables = [m for m in dir(tts) if not m.startswith("_") and callable(getattr(tts, m, None))]
-        synth_fn = getattr(tts, callables[0])
-
-    sig_s = inspect.signature(synth_fn)
-    call_kw = {}
-    for p in ["audio_prompt_path", "ref_audio", "reference", "ref_path"]:
-        if p in sig_s.parameters and ref_wav:
-            call_kw[p] = str(ref_wav)
-
-    res = synth_fn(clean_text, **call_kw)
-
-    # ডিকশনারি, টুপল বা টেন্সর থেকে অডিও অ্যারে এক্সট্র্যাক্ট করা
-    if isinstance(res, dict):
-        for k in ["audio", "wav", "waveform", "output"]:
-            if k in res:
-                res = res[k]
-                break
-    elif isinstance(res, (tuple, list)):
-        for item in res:
-            if hasattr(item, "shape") or isinstance(item, (np.ndarray, list)):
-                res = item
-                break
-
+    if isinstance(res, (tuple, list)):
+        res = res[0]
     if hasattr(res, "cpu"):
         res = res.squeeze().cpu().numpy()
+    
     arr = np.asarray(res, dtype=np.float32).reshape(-1)
     sr = getattr(tts, "sr", getattr(tts, "sample_rate", 24000))
     sf.write(out_wav, arr, sr)
