@@ -82,7 +82,7 @@ with open(out_wav, "wb") as f:
     f.write(wav_bytes)
 ''',
 
-    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX)
+    # ৩. BanglaTTS Bangladeshi VITS (Sherpa-ONNX) - উচ্চারণ ও বাউন্ডারি ফিক্সড
     "03_BanglaTTS_Sherpa_BD_Male": '''
 import sys, re
 from pathlib import Path
@@ -118,6 +118,7 @@ cfg = sherpa_onnx.OfflineTtsConfig(
 )
 tts = sherpa_onnx.OfflineTts(cfg)
 
+# VITS যুক্তবর্ণ ফোনেটিক রূপান্তর অভিধান (স্পষ্ট ও নির্ভুল উচ্চারণের জন্য)
 PHONETIC_FIXES = {
     "প্রিয়": "প্রিও",
     "স্বাগতম": "শাগতম",
@@ -128,7 +129,7 @@ PHONETIC_FIXES = {
     "প্রযোজ্য": "প্রোজোজজো",
 }
 
-clean_text = text.replace("\\n", " ")
+clean_text = " ".join(text.split())
 for wrong, right in PHONETIC_FIXES.items():
     clean_text = clean_text.replace(wrong, right)
 
@@ -198,7 +199,7 @@ sess = ort.InferenceSession(str(repo / "model.onnx"), providers=["CPUExecutionPr
 sr = int(cfg.get("sampling_rate", 16000))
 inp_names = {i.name for i in sess.get_inputs()}
 
-clean_text = text.replace("\\n", " ")
+clean_text = " ".join(text.split())
 sentences = [s.strip() for s in re.split(r"[।?!.]+", clean_text) if s.strip()]
 parts = []
 pause = np.zeros(int(sr * 0.15), dtype=np.float32)
@@ -269,7 +270,7 @@ samples, sr = kokoro.create(text, voice="am_michael", speed=0.95, lang="en-us")
 sf.write(out_wav, samples, sr)
 ''',
 
-    # ১০. IndicVoice-82M Male (সঠিক kokoro-v1_0.pth ও ভয়েস ফাইল ফিক্সড)
+    # ১০. IndicVoice-82M Male (অফিসিয়াল kokoro-v1_0.pth ও ভয়েস ফাইল ফিক্সড)
     "10_IndicVoice_82M_Male": '''
 import sys, os, shutil
 from pathlib import Path
@@ -279,7 +280,7 @@ import torch
 import torch.serialization
 from huggingface_hub import hf_hub_download
 
-# Kokoro-82M v1.0 এর অফিশিয়াল ৩২৭ মেগাবাইটের মূল ফাইল ডাউনলোড
+# Kokoro-82M v1.0 এর মূল ৩২৭ MB বাইনারি ও ভয়েস ডাউনলোড
 real_weights = hf_hub_download("hexgrad/Kokoro-82M", "kokoro-v1_0.pth")
 real_voice = hf_hub_download("hexgrad/Kokoro-82M", "voices/am_michael.pt")
 
@@ -288,7 +289,7 @@ pkg_dir = Path(indicvoice.__file__).parent
 v_dir = pkg_dir / "voices"
 v_dir.mkdir(parents=True, exist_ok=True)
 
-# LFS পয়েন্টার রিপ্লেস করা
+# প্যাকেজের ভেতরের LFS পয়েন্টার রিপ্লেস করা
 shutil.copy2(real_voice, v_dir / "am_michael.pt")
 shutil.copy2(real_voice, v_dir / "am_adam.pt")
 shutil.copy2(real_weights, pkg_dir / "indicvoice-v1_0.pth")
@@ -330,9 +331,9 @@ else:
     raise RuntimeError("IndicVoice থেকে অডিও পাওয়া যায়নি")
 ''',
 
-    # ১১. Chatterbox Bengali Male (রেফারেন্স ভয়েস স্যাম্পল ref_wav ইন্টিগ্রেশন ফিক্সড)
+    # ১১. Chatterbox Bengali Male (ইউজারের নিজস্ব MP3/WAV অটো-ডিটেক্ট ও কনভার্ট সাপোর্ট)
     "11_Chatterbox_Bengali_Male": '''
-import sys, os, re, shutil, inspect
+import sys, os, re, shutil, inspect, subprocess
 from pathlib import Path
 import numpy as np
 import soundfile as sf
@@ -351,7 +352,7 @@ out_wav = sys.argv[2]
 repo = Path(snapshot_download("Banglabox/chatterbox-bangla-tts"))
 inf_dir = repo / "inference"
 
-# পাথ সিমলিংক সমাধান
+# পাথ লিঙ্ক সমাধান
 for d in ["pretrained_models", "checkpoint", "voices", "src"]:
     target = repo / d
     link = inf_dir / d
@@ -367,21 +368,54 @@ if adapter_src.exists() and not adapter_link.exists():
         try: shutil.copytree(adapter_src, adapter_link)
         except Exception: pass
 
+# ১. রিপোজিটরির ভেতরে ইউজারের দেওয়া MP3 বা WAV ভয়েস স্যাম্পল খোঁজা
+custom_audio = None
+supported_exts = [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
+
+for p in [Path("voices"), Path("ref_voices"), Path(".")]:
+    if p.exists():
+        files = [
+            f for f in p.iterdir()
+            if f.is_file() 
+            and f.suffix.lower() in supported_exts 
+            and "tts_results" not in str(f) 
+            and f.name not in ["raw.wav", "mastered.wav"]
+        ]
+        if files:
+            custom_audio = files[0].resolve()
+            print(f"🎤 ইউজার প্রদত্ত ভয়েস স্যাম্পল পাওয়া গেছে: {custom_audio.name}")
+            break
+
+ref_wav = None
+if custom_audio and custom_audio.exists():
+    # MP3 বা অন্য ফরম্যাট হলে FFmpeg দিয়ে স্বয়ংক্রিয়ভাবে ক্লিন 24kHz মোনো WAV তৈরি
+    if custom_audio.suffix.lower() != ".wav":
+        converted_wav = Path("/tmp/converted_user_voice.wav")
+        conv_cmd = [
+            "ffmpeg", "-y", "-i", str(custom_audio),
+            "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le",
+            str(converted_wav)
+        ]
+        subprocess.run(conv_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        ref_wav = converted_wav
+    else:
+        ref_wav = custom_audio
+else:
+    # ইউজার কোনো স্যাম্পল না দিলে Hugging Face রিপোর ডিফল্ট স্যাম্পল ব্যবহার
+    ref_wav = repo / "voices" / "reference_merged.wav"
+    if not ref_wav.exists():
+        w = list(repo.rglob("*.wav"))
+        ref_wav = w[0] if w else None
+
+if not ref_wav:
+    raise RuntimeError("Chatterbox-এর জন্য কোনো অডিও স্যাম্পল পাওয়া যায়নি!")
+
 os.chdir(str(repo))
 sys.path.insert(0, str(repo / "src"))
 sys.path.insert(0, str(repo / "inference"))
 sys.path.insert(0, str(repo))
 
-# রেফারেন্স অডিও স্যাম্পল লোড করা
-ref_wav = repo / "voices" / "reference_merged.wav"
-if not ref_wav.exists():
-    w = list(repo.rglob("*.wav"))
-    ref_wav = w[0] if w else None
-
-if not ref_wav:
-    raise RuntimeError("Chatterbox-এর জন্য কোনো রেফারেন্স অডিও স্যাম্পল (.wav) পাওয়া যায়নি!")
-
-clean_text = text.replace("\\n", " ")
+clean_text = " ".join(text.split())
 
 import infer
 if hasattr(infer, "BanglaTTS"):
